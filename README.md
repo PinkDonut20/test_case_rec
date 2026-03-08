@@ -1,0 +1,34 @@
+# Test task baseline: Document preprocessing + OCR + field extraction
+
+Сделал быстрый Google Colab ноутбук без токенов и внешних API:
+
+- `colab_document_ocr_pipeline.ipynb`
+
+## Что реализовано
+
+1. Выравнивание документа на фото (OpenCV, поиск 4-угольного контура + perspective transform).
+2. OCR текста (EasyOCR, локально, CPU/GPU).
+3. Извлечение структурированных полей:
+   - `full_name`
+   - `birth_date`
+   - `document_number`
+4. Сохранение результатов:
+   - выровненное изображение
+   - изображение с детекциями/текстом
+   - JSON с полями и полным OCR
+
+## Как запустить
+
+1. Открой `colab_document_ocr_pipeline.ipynb` в Google Colab.
+2. Запусти ячейки сверху вниз.
+3. В ячейке `files.upload()` загрузи фото документа.
+4. Получишь:
+   - визуализацию в ноутбуке
+   - файлы в папке `outputs/`
+
+## Почему это подходит под тестовое
+
+- Python + локальный инференс (без ключей и токенов).
+- Работает на CPU и на GPU (`torch.cuda.is_available()`).
+- Есть полный рабочий pipeline от входного изображения до структурированного JSON.
+- Легко завернуть в REST API/Docker на следующем шаге.
