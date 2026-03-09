@@ -23,7 +23,7 @@ EXTRACTOR_MODE = os.getenv("EXTRACTOR_MODE", "hf").lower()
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7b-instruct")
-HF_MODEL = os.getenv("HF_MODEL", "google/flan-t5-small")
+HF_MODEL = os.getenv("HF_MODEL", "Qwen/Qwen2.5-0.5B-Instruct")
 
 USE_GPU = os.getenv("USE_GPU", "0") == "1"
 OCR_CONF_THRESHOLD = float(os.getenv("OCR_CONF_THRESHOLD", "0.20"))
@@ -43,7 +43,7 @@ def get_reader() -> easyocr.Reader:
 def get_hf_pipe():
     global _hf_pipe
     if _hf_pipe is None:
-        _hf_pipe = pipeline("text2text-generation", model=HF_MODEL)
+        _hf_pipe = pipeline("text-generation", model=HF_MODEL)
     return _hf_pipe
 
 
