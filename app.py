@@ -12,7 +12,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from openai import OpenAI
 
-app = FastAPI(title="doc-ocr-llm", version="3.0.0")
+app = FastAPI(title="doc-ocr-llm", version="4.0.0")
 
 OUT_DIR = Path(os.getenv("OUTPUT_DIR", "outputs"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -22,6 +22,9 @@ LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7b-instruct")
 USE_GPU = os.getenv("USE_GPU", "0") == "1"
+
+OCR_CONF_THRESHOLD = float(os.getenv("OCR_CONF_THRESHOLD", "0.20"))
+OCR_MIN_BOX_AREA = int(os.getenv("OCR_MIN_BOX_AREA", "60"))
 
 _reader = None
 
@@ -33,60 +36,149 @@ def get_reader() -> easyocr.Reader:
     return _reader
 
 
-def preprocess_for_ocr(image_bgr):
-    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
-    denoised = cv2.bilateralFilter(gray, d=7, sigmaColor=75, sigmaSpace=75)
-    thr = cv2.adaptiveThreshold(
-        denoised,
-        255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        35,
-        11,
-    )
-    return thr
-
-
 def _is_text_like(s: str) -> bool:
     s = s.strip()
     if not s:
         return False
-    return sum(ch.isalnum() for ch in s) >= 2
+    alnum = sum(ch.isalnum() for ch in s)
+    return alnum >= 2
 
 
-def ocr_lines(image_bgr) -> list[dict[str, Any]]:
-    prepared = preprocess_for_ocr(image_bgr)
-    reader = get_reader()
-    result = reader.readtext(prepared, detail=1, paragraph=False)
+def _normalize_text(s: str) -> str:
+    return re.sub(r"\s+", " ", s.strip())
 
-    lines: list[dict[str, Any]] = []
-    h_img, w_img = prepared.shape[:2]
-    min_box_area = max(120, int(h_img * w_img * 0.0003))
 
-    for item in result:
-        box, text, conf = item
-        text = re.sub(r"\s+", " ", str(text).strip())
-        conf = float(conf)
-        if conf < 0.35 or not _is_text_like(text):
-            continue
+def _line_norm(s: str) -> str:
+    return re.sub(r"\s+", " ", s.strip().upper())
 
-        xs = [int(p[0]) for p in box]
-        ys = [int(p[1]) for p in box]
-        x, y = min(xs), min(ys)
-        w, h = max(xs) - x, max(ys) - y
-        if w * h < min_box_area:
-            continue
 
-        lines.append(
+def build_ocr_variants(image_bgr):
+    h, w = image_bgr.shape[:2]
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
+
+    sharpen_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    sharp = cv2.filter2D(image_bgr, -1, sharpen_kernel)
+
+    up = cv2.resize(image_bgr, (int(w * 1.5), int(h * 1.5)), interpolation=cv2.INTER_CUBIC)
+
+    return [
+        ("orig", image_bgr, 1.0),
+        ("gray", gray, 1.0),
+        ("clahe", clahe, 1.0),
+        ("sharp", sharp, 1.0),
+        ("up", up, 1.5),
+    ]
+
+
+def _bbox_from_quad(box):
+    xs = [int(p[0]) for p in box]
+    ys = [int(p[1]) for p in box]
+    x, y = min(xs), min(ys)
+    w, h = max(xs) - x, max(ys) - y
+    return x, y, w, h
+
+
+def _boxes_close(a, b) -> bool:
+    ax, ay, aw, ah = a
+    bx, by, bw, bh = b
+    acx, acy = ax + aw / 2, ay + ah / 2
+    bcx, bcy = bx + bw / 2, by + bh / 2
+    dx, dy = abs(acx - bcx), abs(acy - bcy)
+    h_ref = max(ah, bh, 1)
+    w_ref = max(aw, bw, 1)
+    return dx < 0.6 * w_ref and dy < 0.6 * h_ref
+
+
+def _merge_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    clusters: list[list[dict[str, Any]]] = []
+    for c in candidates:
+        added = False
+        for cl in clusters:
+            if _boxes_close(c["bbox"], cl[0]["bbox"]):
+                cl.append(c)
+                added = True
+                break
+        if not added:
+            clusters.append([c])
+
+    merged = []
+    for cl in clusters:
+        cl_sorted = sorted(cl, key=lambda x: (x["confidence"], len(x["text"])), reverse=True)
+        best = cl_sorted[0]
+        x1 = min(x["bbox"][0] for x in cl)
+        y1 = min(x["bbox"][1] for x in cl)
+        x2 = max(x["bbox"][0] + x["bbox"][2] for x in cl)
+        y2 = max(x["bbox"][1] + x["bbox"][3] for x in cl)
+        merged.append(
             {
-                "text": text,
-                "bbox": [x, y, w, h],
-                "confidence": round(conf, 3),
+                "text": best["text"],
+                "bbox": [x1, y1, x2 - x1, y2 - y1],
+                "confidence": round(sum(x["confidence"] for x in cl) / len(cl), 3),
             }
         )
+    return merged
+
+
+def _merge_words_into_lines(words: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not words:
+        return []
+    words = sorted(words, key=lambda x: (x["bbox"][1], x["bbox"][0]))
+
+    line_clusters: list[list[dict[str, Any]]] = []
+    heights = [max(1, w["bbox"][3]) for w in words]
+    median_h = sorted(heights)[len(heights) // 2]
+    y_thr = max(8, int(0.6 * median_h))
+
+    for w in words:
+        y_mid = w["bbox"][1] + w["bbox"][3] / 2
+        placed = False
+        for cl in line_clusters:
+            cy = sum(x["bbox"][1] + x["bbox"][3] / 2 for x in cl) / len(cl)
+            if abs(y_mid - cy) <= y_thr:
+                cl.append(w)
+                placed = True
+                break
+        if not placed:
+            line_clusters.append([w])
+
+    lines = []
+    for cl in line_clusters:
+        cl = sorted(cl, key=lambda x: x["bbox"][0])
+        text = _normalize_text(" ".join(x["text"] for x in cl))
+        if not _is_text_like(text):
+            continue
+        x1 = min(x["bbox"][0] for x in cl)
+        y1 = min(x["bbox"][1] for x in cl)
+        x2 = max(x["bbox"][0] + x["bbox"][2] for x in cl)
+        y2 = max(x["bbox"][1] + x["bbox"][3] for x in cl)
+        conf = sum(x["confidence"] for x in cl) / len(cl)
+        lines.append({"text": text, "bbox": [x1, y1, x2 - x1, y2 - y1], "confidence": round(conf, 3)})
 
     lines.sort(key=lambda x: (x["bbox"][1], x["bbox"][0]))
     return lines
+
+
+def ocr_lines(image_bgr) -> list[dict[str, Any]]:
+    reader = get_reader()
+    raw_candidates: list[dict[str, Any]] = []
+
+    for _, variant, scale in build_ocr_variants(image_bgr):
+        result = reader.readtext(variant, detail=1, paragraph=False)
+        for box, text, conf in result:
+            text = _normalize_text(str(text))
+            conf = float(conf)
+            if conf < OCR_CONF_THRESHOLD or not _is_text_like(text):
+                continue
+            x, y, w, h = _bbox_from_quad(box)
+            if scale != 1.0:
+                x, y, w, h = int(x / scale), int(y / scale), int(w / scale), int(h / scale)
+            if w * h < OCR_MIN_BOX_AREA:
+                continue
+            raw_candidates.append({"text": text, "bbox": [x, y, w, h], "confidence": conf})
+
+    merged_words = _merge_candidates(raw_candidates)
+    return _merge_words_into_lines(merged_words)
 
 
 def draw_lines(image_bgr, lines: list[dict[str, Any]]):
@@ -95,10 +187,6 @@ def draw_lines(image_bgr, lines: list[dict[str, Any]]):
         x, y, w, h = line["bbox"]
         cv2.rectangle(out, (x, y), (x + w, y + h), (0, 255, 0), 2)
     return out
-
-
-def _normalize(s: str) -> str:
-    return re.sub(r"\s+", " ", s.strip().upper())
 
 
 def _parse_date(s: str):
@@ -115,9 +203,49 @@ def _parse_date(s: str):
     return value
 
 
+def _extract_after_label(lines: list[str], labels: list[str]) -> str | None:
+    for i, line in enumerate(lines):
+        for lbl in labels:
+            if lbl in line:
+                rest = _normalize_text(line.split(lbl, 1)[-1]).strip(" :")
+                if len(rest) >= 2:
+                    return rest
+                if i + 1 < len(lines):
+                    nxt = _normalize_text(lines[i + 1]).strip(" :")
+                    if len(nxt) >= 2:
+                        return nxt
+    return None
+
+
 def heuristic_extract(ocr_lines_text: list[str]) -> dict[str, Any]:
-    lines = [x for x in (_normalize(t) for t in ocr_lines_text) if x]
+    lines = [x for x in (_line_norm(t) for t in ocr_lines_text) if x]
     joined = " ".join(lines)
+
+    surname = _extract_after_label(lines, ["ФАМИЛ", "SURNAME"])
+    name = _extract_after_label(lines, ["ИМЯ", "NAME"])
+    patronymic = _extract_after_label(lines, ["ОТЧЕСТ", "PATRONYMIC", "MIDDLE"])
+
+    full_name = None
+    if surname or name or patronymic:
+        parts = [p for p in [surname, name, patronymic] if p]
+        if parts:
+            full_name = _normalize_text(" ".join(parts))
+
+    if not full_name:
+        stop_words = {
+            "ВОДИТЕЛЬСКОЕ", "УДОСТОВЕРЕНИЕ", "ПАСПОРТ", "РЕСПУБЛИКА", "ФЕДЕРАЦИЯ", "РОССИЙСКАЯ",
+            "ДАТА", "ВЫДАЧИ", "КОД", "ПОДРАЗДЕЛЕНИЯ", "МВД", "ПО", "ГОРОД", "ГОР",
+        }
+        for line in lines:
+            clean = re.sub(r"[^А-ЯЁ\s-]", "", line).strip()
+            words = [w for w in clean.split() if w]
+            if not (2 <= len(words) <= 4):
+                continue
+            if any(w in stop_words for w in words):
+                continue
+            if all(re.fullmatch(r"[А-ЯЁ-]{2,}", w or "") for w in words):
+                full_name = " ".join(words)
+                break
 
     birth_date = None
     anchor_idx = None
@@ -140,22 +268,6 @@ def heuristic_extract(ocr_lines_text: list[str]) -> dict[str, Any]:
         m = re.search(p, joined)
         if m:
             document_number = re.sub(r"\s+", " ", m.group(1)).strip()
-            break
-
-    stop_words = {
-        "ВОДИТЕЛЬСКОЕ", "УДОСТОВЕРЕНИЕ", "ПАСПОРТ", "РЕСПУБЛИКА", "ФЕДЕРАЦИЯ", "РОССИЙСКАЯ",
-        "ДАТА", "ВЫДАЧИ", "КОД", "ПОДРАЗДЕЛЕНИЯ", "МВД", "ПО", "ГОРОД", "ГОР",
-    }
-    full_name = None
-    for line in lines:
-        clean = re.sub(r"[^А-ЯЁ\s-]", "", line).strip()
-        words = [w for w in clean.split() if w]
-        if not (2 <= len(words) <= 4):
-            continue
-        if any(w in stop_words for w in words):
-            continue
-        if all(re.fullmatch(r"[А-ЯЁ-]{2,}", w or "") for w in words):
-            full_name = " ".join(words)
             break
 
     return {
@@ -206,8 +318,10 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "extractor_mode": EXTRACTOR_MODE,
-        "ocr_engine": "easyocr",
+        "ocr_engine": "easyocr_multipass",
         "use_gpu": USE_GPU,
+        "ocr_conf_threshold": OCR_CONF_THRESHOLD,
+        "ocr_min_box_area": OCR_MIN_BOX_AREA,
         "llm_model": LLM_MODEL if EXTRACTOR_MODE == "api" else None,
         "llm_base_url": LLM_BASE_URL if EXTRACTOR_MODE == "api" else None,
     }
@@ -251,7 +365,7 @@ async def process(file: UploadFile = File(...)) -> JSONResponse:
         "input_image": file.filename,
         "annotated_image": str(annotated_path),
         "ocr": {
-            "engine": "easyocr",
+            "engine": "easyocr_multipass",
             "lines": lines,
             "full_text": full_text,
             "lines_count": len(lines),

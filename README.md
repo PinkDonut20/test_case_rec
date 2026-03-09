@@ -1,20 +1,25 @@
-# OCR API для тестового: EasyOCR вместо pytesseract
+# Финальный OCR API: EasyOCR multi-pass + улучшенный парсинг полей
 
-По твоему комменту переписал OCR-движок:
-- было: `pytesseract`
-- стало: **`EasyOCR`** (лучше на документах с шумом/фоном)
+Сделал финальный вариант, чтобы лучше детектить текст на сложных документах.
 
-## Что сейчас делает сервис
+## Что улучшено
 
-1. Принимает изображение (`POST /process`)
-2. OCR через EasyOCR (ru+en)
-3. Фильтрует слабые/мусорные боксы
-4. Извлекает поля:
-   - `heuristic` (по умолчанию, локально)
-   - или `api` (через OpenAI-compatible LLM)
-5. Возвращает JSON + сохраняет annotated image и result json
+- OCR теперь **multi-pass**:
+  - original
+  - gray
+  - CLAHE
+  - sharpen
+  - upscale x1.5
+- Результаты из проходов объединяются (дедуп + слияние), потом склеиваются в строки.
+- Мусор режется на этапе OCR:
+  - `OCR_CONF_THRESHOLD` (по умолчанию `0.20`)
+  - `OCR_MIN_BOX_AREA` (по умолчанию `60`)
+- Парсинг полей стал точнее:
+  - ФИО сначала ищется по якорям (`Фамилия`, `Имя`, `Отчество`), затем fallback
+  - дата рождения ищется возле `ДАТА РОЖД...`/`BIRTH`
+  - номер документа по приоритетным паттернам
 
-## Быстрый запуск
+## Запуск
 
 ```bash
 docker compose up --build
@@ -33,23 +38,28 @@ curl -X POST "http://localhost:8000/process" \
   -F "file=@/path/to/document.jpg"
 ```
 
-## Режимы
+## Режимы extractor
 
-- `EXTRACTOR_MODE=heuristic` (default)
-- `EXTRACTOR_MODE=api` + `LLM_BASE_URL`/`LLM_MODEL` для Qwen/Ollama
+- `EXTRACTOR_MODE=heuristic` (по умолчанию)
+- `EXTRACTOR_MODE=api` — отправка OCR в OpenAI-compatible LLM
 
 ## ENV
 
-Смотри `.env.example`:
-- `EXTRACTOR_MODE`
-- `USE_GPU` (0/1)
-- `LLM_BASE_URL`
-- `LLM_API_KEY`
-- `LLM_MODEL`
+```env
+EXTRACTOR_MODE=heuristic
+USE_GPU=0
+OCR_CONF_THRESHOLD=0.20
+OCR_MIN_BOX_AREA=60
 
-## Что в ответе
+# только для EXTRACTOR_MODE=api
+LLM_BASE_URL=
+LLM_API_KEY=
+LLM_MODEL=qwen2.5:7b-instruct
+```
 
-- `ocr.engine = easyocr`
-- `ocr.lines` / `ocr.full_text` / `ocr.lines_count`
+## Ответ API
+
+- `ocr.engine = easyocr_multipass`
+- `ocr.lines`, `ocr.full_text`, `ocr.lines_count`
 - `fields.full_name`, `fields.birth_date`, `fields.document_number`
-- `extractor.mode` и `extractor.error`
+- `extractor.mode`, `extractor.error`

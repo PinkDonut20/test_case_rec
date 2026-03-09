@@ -7,6 +7,8 @@ services:
     environment:
       EXTRACTOR_MODE: ${EXTRACTOR_MODE:-heuristic}
       USE_GPU: ${USE_GPU:-0}
+      OCR_CONF_THRESHOLD: ${OCR_CONF_THRESHOLD:-0.20}
+      OCR_MIN_BOX_AREA: ${OCR_MIN_BOX_AREA:-60}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct}
