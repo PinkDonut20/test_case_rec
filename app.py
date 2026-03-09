@@ -11,22 +11,26 @@ import easyocr
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from openai import OpenAI
+from transformers import pipeline
 
-app = FastAPI(title="doc-ocr-llm", version="4.0.0")
+app = FastAPI(title="doc-ocr-llm", version="5.0.0")
 
 OUT_DIR = Path(os.getenv("OUTPUT_DIR", "outputs"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-EXTRACTOR_MODE = os.getenv("EXTRACTOR_MODE", "hybrid").lower()
+# Режимы: heuristic | hf | api
+EXTRACTOR_MODE = os.getenv("EXTRACTOR_MODE", "hf").lower()
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7b-instruct")
-USE_GPU = os.getenv("USE_GPU", "0") == "1"
+HF_MODEL = os.getenv("HF_MODEL", "google/flan-t5-small")
 
+USE_GPU = os.getenv("USE_GPU", "0") == "1"
 OCR_CONF_THRESHOLD = float(os.getenv("OCR_CONF_THRESHOLD", "0.20"))
 OCR_MIN_BOX_AREA = int(os.getenv("OCR_MIN_BOX_AREA", "60"))
 
 _reader = None
+_hf_pipe = None
 
 
 def get_reader() -> easyocr.Reader:
@@ -36,12 +40,18 @@ def get_reader() -> easyocr.Reader:
     return _reader
 
 
+def get_hf_pipe():
+    global _hf_pipe
+    if _hf_pipe is None:
+        _hf_pipe = pipeline("text2text-generation", model=HF_MODEL)
+    return _hf_pipe
+
+
 def _is_text_like(s: str) -> bool:
     s = s.strip()
     if not s:
         return False
-    alnum = sum(ch.isalnum() for ch in s)
-    return alnum >= 2
+    return sum(ch.isalnum() for ch in s) >= 2
 
 
 def _normalize_text(s: str) -> str:
@@ -277,8 +287,6 @@ def heuristic_extract(ocr_lines_text: list[str]) -> dict[str, Any]:
     }
 
 
-
-
 def _invalid_full_name(value: str | None) -> bool:
     if not value:
         return True
@@ -324,17 +332,38 @@ def _postprocess_fields(fields: dict[str, Any], fallback: dict[str, Any]) -> dic
 
     return out
 
-def llm_extract(ocr_lines_text: list[str], full_text: str) -> dict[str, Any]:
+
+def hf_extract(ocr_lines_text: list[str], full_text: str) -> dict[str, Any]:
+    pipe = get_hf_pipe()
+    prompt = (
+        "Извлеки поля из OCR текста документа и верни строго JSON: "
+        "{\"full_name\": ..., \"birth_date\": ..., \"document_number\": ...}. "
+        "Нельзя использовать заголовки документа как ФИО. "
+        "Если поле не найдено, ставь null.\n"
+        f"OCR lines: {json.dumps(ocr_lines_text, ensure_ascii=False)}\n"
+        f"OCR full_text: {full_text}"
+    )
+    out = pipe(prompt, max_new_tokens=128, do_sample=False)
+    text = out[0]["generated_text"]
+    m = re.search(r"\{[\s\S]*\}", text)
+    if not m:
+        raise ValueError(f"HF model did not return JSON: {text[:300]}")
+    parsed = json.loads(m.group(0))
+    return {
+        "full_name": parsed.get("full_name"),
+        "birth_date": parsed.get("birth_date"),
+        "document_number": parsed.get("document_number"),
+    }
+
+
+def api_extract(ocr_lines_text: list[str], full_text: str) -> dict[str, Any]:
     if not LLM_BASE_URL:
         raise ValueError("LLM_BASE_URL is empty")
 
     client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY or "dummy")
     prompt = (
-        "Ниже OCR русского документа после фильтрации шума. "
-        "Извлеки только поля владельца документа. "
-        "Никогда не используй как full_name заголовки вида ВОДИТЕЛЬСКОЕ УДОСТОВЕРЕНИЕ, ПАСПОРТ, МВД. "
-        "Верни ТОЛЬКО JSON с ключами: full_name, birth_date, document_number. "
-        "Дата: DD.MM.YYYY, если нет — null. Номер документа верни в формате XX XX XXXXXX или строкой из цифр.\n"
+        "Извлеки из OCR текста поля full_name, birth_date, document_number и верни только JSON. "
+        "Нельзя использовать заголовки документа как ФИО.\n"
         f"OCR lines: {json.dumps(ocr_lines_text, ensure_ascii=False)}\n"
         f"OCR full_text: {full_text}"
     )
@@ -351,7 +380,7 @@ def llm_extract(ocr_lines_text: list[str], full_text: str) -> dict[str, Any]:
     content = resp.choices[0].message.content or ""
     match = re.search(r"\{[\s\S]*\}", content)
     if not match:
-        raise ValueError(f"LLM did not return JSON: {content[:300]}")
+        raise ValueError(f"API model did not return JSON: {content[:300]}")
 
     parsed = json.loads(match.group(0))
     return {
@@ -368,8 +397,7 @@ def health() -> dict[str, Any]:
         "extractor_mode": EXTRACTOR_MODE,
         "ocr_engine": "easyocr_multipass",
         "use_gpu": USE_GPU,
-        "ocr_conf_threshold": OCR_CONF_THRESHOLD,
-        "ocr_min_box_area": OCR_MIN_BOX_AREA,
+        "hf_model": HF_MODEL if EXTRACTOR_MODE == "hf" else None,
         "llm_model": LLM_MODEL if EXTRACTOR_MODE == "api" else None,
         "llm_base_url": LLM_BASE_URL if EXTRACTOR_MODE == "api" else None,
     }
@@ -394,10 +422,14 @@ async def process(file: UploadFile = File(...)) -> JSONResponse:
     heuristic_fields = heuristic_extract(line_texts)
 
     try:
-        if EXTRACTOR_MODE in {"api", "hybrid"}:
-            llm_fields = llm_extract(line_texts, full_text)
-            fields = _postprocess_fields(llm_fields, heuristic_fields)
-            used = "api" if EXTRACTOR_MODE == "api" else "hybrid"
+        if EXTRACTOR_MODE == "api":
+            raw_fields = api_extract(line_texts, full_text)
+            fields = _postprocess_fields(raw_fields, heuristic_fields)
+            used = "api"
+        elif EXTRACTOR_MODE == "hf":
+            raw_fields = hf_extract(line_texts, full_text)
+            fields = _postprocess_fields(raw_fields, heuristic_fields)
+            used = "hf"
         else:
             fields = heuristic_fields
             used = "heuristic"
@@ -425,8 +457,9 @@ async def process(file: UploadFile = File(...)) -> JSONResponse:
         "extractor": {
             "mode": used,
             "error": extractor_error,
-            "llm_model": LLM_MODEL if used.startswith("api") else None,
-            "llm_base_url": LLM_BASE_URL if used.startswith("api") else None,
+            "hf_model": HF_MODEL if used == "hf" else None,
+            "llm_model": LLM_MODEL if used == "api" else None,
+            "llm_base_url": LLM_BASE_URL if used == "api" else None,
         },
     }
 

@@ -1,22 +1,20 @@
-# Сервис первичной обработки документов (финальная версия)
+# Финальная версия сервиса: OCR + финализация полей
 
-## Пайплайн
+## Что важно
 
-1. Изображение документа -> EasyOCR multi-pass
-2. OCR-строки -> извлечение полей
-3. Режим `hybrid` (по умолчанию):
-   - сначала локальные эвристики
-   - затем уточнение по всем OCR-строкам через внешний LLM
-   - защита от ложного ФИО (например, `ВОДИТЕЛЬСКОЕ УДОСТОВЕРЕНИЕ`)
-4. Возврат JSON + сохранение артефактов
+- Текст извлекается через EasyOCR multi-pass.
+- Финализация полей (`full_name`, `birth_date`, `document_number`) выполняется моделью:
+  - по умолчанию локальная модель с HuggingFace (`EXTRACTOR_MODE=hf`),
+  - альтернативно внешний endpoint (`EXTRACTOR_MODE=api`).
+- При ошибке модели включается безопасный fallback на локальные эвристики.
 
-## Что исправлено
+## Режимы
 
-- Добавлена пост-валидация `full_name`: заголовки и служебные строки больше не принимаются как ФИО.
-- Нормализуется `document_number` (например, `7707123456` -> `77 07 123456`).
-- В `hybrid/api` в LLM передаются **все OCR-строки и full_text** для корректного извлечения ФИО/даты/номера.
+- `heuristic` — только локальные правила
+- `hf` — локальная модель HuggingFace (рекомендуемый дефолт)
+- `api` — внешний OpenAI-compatible endpoint
 
-## Запуск
+## Быстрый запуск
 
 ```bash
 docker compose up --build
@@ -38,17 +36,19 @@ curl -X POST "http://localhost:8000/process" \
 ## Конфигурация (`.env`)
 
 ```env
-EXTRACTOR_MODE=hybrid
+EXTRACTOR_MODE=hf
 USE_GPU=0
 OCR_CONF_THRESHOLD=0.20
 OCR_MIN_BOX_AREA=60
+HF_MODEL=google/flan-t5-small
 
 LLM_BASE_URL=
 LLM_API_KEY=
 LLM_MODEL=qwen2.5:7b-instruct
 ```
 
-Режимы:
-- `heuristic` — только локально
-- `hybrid` — эвристика + LLM уточнение (рекомендуется)
-- `api` — только внешний LLM (с локальным fallback при ошибке)
+## Ответ API
+
+- `ocr.lines` / `ocr.full_text` / `ocr.lines_count`
+- `fields.full_name`, `fields.birth_date`, `fields.document_number`
+- `extractor.mode`, `extractor.error`
