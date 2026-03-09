@@ -6,6 +6,7 @@ services:
       - "8000:8000"
     environment:
       EXTRACTOR_MODE: ${EXTRACTOR_MODE:-heuristic}
+      USE_GPU: ${USE_GPU:-0}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct}

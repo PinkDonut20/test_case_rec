@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Any
 
 import cv2
-import pytesseract
+import easyocr
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from openai import OpenAI
 
-app = FastAPI(title="doc-ocr-llm", version="2.2.0")
+app = FastAPI(title="doc-ocr-llm", version="3.0.0")
 
 OUT_DIR = Path(os.getenv("OUTPUT_DIR", "outputs"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -21,6 +21,16 @@ EXTRACTOR_MODE = os.getenv("EXTRACTOR_MODE", "heuristic").lower()
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7b-instruct")
+USE_GPU = os.getenv("USE_GPU", "0") == "1"
+
+_reader = None
+
+
+def get_reader() -> easyocr.Reader:
+    global _reader
+    if _reader is None:
+        _reader = easyocr.Reader(["ru", "en"], gpu=USE_GPU)
+    return _reader
 
 
 def preprocess_for_ocr(image_bgr):
@@ -41,70 +51,41 @@ def _is_text_like(s: str) -> bool:
     s = s.strip()
     if not s:
         return False
-    alnum_count = sum(ch.isalnum() for ch in s)
-    if alnum_count < 2:
-        return False
-    return True
+    return sum(ch.isalnum() for ch in s) >= 2
 
 
 def ocr_lines(image_bgr) -> list[dict[str, Any]]:
     prepared = preprocess_for_ocr(image_bgr)
-    data = pytesseract.image_to_data(
-        prepared,
-        lang="rus+eng",
-        output_type=pytesseract.Output.DICT,
-        config="--oem 1 --psm 6",
-    )
+    reader = get_reader()
+    result = reader.readtext(prepared, detail=1, paragraph=False)
 
+    lines: list[dict[str, Any]] = []
     h_img, w_img = prepared.shape[:2]
-    min_box_area = max(80, int(h_img * w_img * 0.00025))
+    min_box_area = max(120, int(h_img * w_img * 0.0003))
 
-    lines_map: dict[tuple[int, int, int], dict[str, Any]] = {}
-    for i in range(len(data["text"])):
-        text = (data["text"][i] or "").strip()
-        conf = float(data["conf"][i]) if str(data["conf"][i]) != "-1" else -1.0
-        if conf < 35 or not _is_text_like(text):
+    for item in result:
+        box, text, conf = item
+        text = re.sub(r"\s+", " ", str(text).strip())
+        conf = float(conf)
+        if conf < 0.35 or not _is_text_like(text):
             continue
 
-        left = int(data["left"][i])
-        top = int(data["top"][i])
-        width = int(data["width"][i])
-        height = int(data["height"][i])
-        if width * height < min_box_area:
+        xs = [int(p[0]) for p in box]
+        ys = [int(p[1]) for p in box]
+        x, y = min(xs), min(ys)
+        w, h = max(xs) - x, max(ys) - y
+        if w * h < min_box_area:
             continue
 
-        key = (int(data["block_num"][i]), int(data["par_num"][i]), int(data["line_num"][i]))
-        if key not in lines_map:
-            lines_map[key] = {
-                "words": [],
-                "x": left,
-                "y": top,
-                "w": width,
-                "h": height,
-                "conf_sum": 0.0,
-                "cnt": 0,
-            }
-        item = lines_map[key]
-        item["words"].append(text)
-        item["x"] = min(item["x"], left)
-        item["y"] = min(item["y"], top)
-        item["w"] = max(item["w"], left + width - item["x"])
-        item["h"] = max(item["h"], top + height - item["y"])
-        item["conf_sum"] += conf
-        item["cnt"] += 1
-
-    lines = []
-    for _, v in sorted(lines_map.items(), key=lambda kv: (kv[1]["y"], kv[1]["x"])):
-        line_text = re.sub(r"\s+", " ", " ".join(v["words"]).strip())
-        if not _is_text_like(line_text):
-            continue
         lines.append(
             {
-                "text": line_text,
-                "bbox": [v["x"], v["y"], v["w"], v["h"]],
-                "confidence": round(v["conf_sum"] / max(v["cnt"], 1), 2),
+                "text": text,
+                "bbox": [x, y, w, h],
+                "confidence": round(conf, 3),
             }
         )
+
+    lines.sort(key=lambda x: (x["bbox"][1], x["bbox"][0]))
     return lines
 
 
@@ -225,6 +206,8 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "extractor_mode": EXTRACTOR_MODE,
+        "ocr_engine": "easyocr",
+        "use_gpu": USE_GPU,
         "llm_model": LLM_MODEL if EXTRACTOR_MODE == "api" else None,
         "llm_base_url": LLM_BASE_URL if EXTRACTOR_MODE == "api" else None,
     }
@@ -268,6 +251,7 @@ async def process(file: UploadFile = File(...)) -> JSONResponse:
         "input_image": file.filename,
         "annotated_image": str(annotated_path),
         "ocr": {
+            "engine": "easyocr",
             "lines": lines,
             "full_text": full_text,
             "lines_count": len(lines),

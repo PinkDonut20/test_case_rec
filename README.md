@@ -1,26 +1,20 @@
-# OCR API для тестового: лучше фильтрация шума + точнее поля
+# OCR API для тестового: EasyOCR вместо pytesseract
 
-Сервис запускается сразу через Docker и по умолчанию **без Ollama**.
+По твоему комменту переписал OCR-движок:
+- было: `pytesseract`
+- стало: **`EasyOCR`** (лучше на документах с шумом/фоном)
 
-## Что улучшено
+## Что сейчас делает сервис
 
-- OCR теперь идет через предобработку изображения (denoise + adaptive threshold), чтобы меньше ловить шум/фон.
-- Добавлена фильтрация мусора:
-  - минимальный confidence слова
-  - отбрасывание слишком маленьких боксов
-  - отбрасывание «непохожих на текст» токенов
-- Эвристики полей стали точнее:
-  - дата рождения ищется с учетом якорей (`ДАТА РОЖД...` / `BIRTH`)
-  - номер документа приоритетно формата `XX XX XXXXXX`
-  - ФИО фильтруется от служебных слов (`МВД`, `код`, `дата`, `республика` и т.п.)
+1. Принимает изображение (`POST /process`)
+2. OCR через EasyOCR (ru+en)
+3. Фильтрует слабые/мусорные боксы
+4. Извлекает поля:
+   - `heuristic` (по умолчанию, локально)
+   - или `api` (через OpenAI-compatible LLM)
+5. Возвращает JSON + сохраняет annotated image и result json
 
-## Режимы
-
-- `EXTRACTOR_MODE=heuristic` (по умолчанию): OCR + локальное извлечение полей
-- `EXTRACTOR_MODE=api`: OCR + внешний OpenAI-compatible LLM
-  - если LLM упал/вернул мусор, есть fallback на heuristic
-
-## Быстрый старт (без Ollama)
+## Быстрый запуск
 
 ```bash
 docker compose up --build
@@ -32,34 +26,30 @@ docker compose up --build
 curl http://localhost:8000/health
 ```
 
-Обработка документа:
+Обработка:
 
 ```bash
 curl -X POST "http://localhost:8000/process" \
   -F "file=@/path/to/document.jpg"
 ```
 
-## Что вернет /process
+## Режимы
 
-- `ocr.lines` — строки OCR + bbox + confidence
-- `ocr.full_text` — весь OCR-текст
-- `ocr.lines_count` — сколько строк осталось после фильтрации
-- `fields`:
-  - `full_name`
-  - `birth_date`
-  - `document_number`
-- `extractor.mode`:
-  - `heuristic`
-  - `api`
-  - `heuristic_fallback`
+- `EXTRACTOR_MODE=heuristic` (default)
+- `EXTRACTOR_MODE=api` + `LLM_BASE_URL`/`LLM_MODEL` для Qwen/Ollama
 
-## Опционально: Qwen через API
+## ENV
 
-В `.env`:
+Смотри `.env.example`:
+- `EXTRACTOR_MODE`
+- `USE_GPU` (0/1)
+- `LLM_BASE_URL`
+- `LLM_API_KEY`
+- `LLM_MODEL`
 
-```env
-EXTRACTOR_MODE=api
-LLM_BASE_URL=http://host.docker.internal:11434/v1
-LLM_API_KEY=ollama
-LLM_MODEL=qwen2.5:7b-instruct
-```
+## Что в ответе
+
+- `ocr.engine = easyocr`
+- `ocr.lines` / `ocr.full_text` / `ocr.lines_count`
+- `fields.full_name`, `fields.birth_date`, `fields.document_number`
+- `extractor.mode` и `extractor.error`
