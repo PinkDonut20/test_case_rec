@@ -2,6 +2,7 @@ import json
 import os
 import re
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,62 +12,95 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from openai import OpenAI
 
-app = FastAPI(title="doc-ocr-llm", version="2.1.0")
+app = FastAPI(title="doc-ocr-llm", version="2.2.0")
 
 OUT_DIR = Path(os.getenv("OUTPUT_DIR", "outputs"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# По умолчанию НЕ требуем Ollama/внешний LLM.
-# Режимы:
-# - heuristic (default): OCR + локальное извлечение полей
-# - api: OCR + внешний OpenAI-compatible LLM
 EXTRACTOR_MODE = os.getenv("EXTRACTOR_MODE", "heuristic").lower()
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7b-instruct")
 
 
+def preprocess_for_ocr(image_bgr):
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
+    denoised = cv2.bilateralFilter(gray, d=7, sigmaColor=75, sigmaSpace=75)
+    thr = cv2.adaptiveThreshold(
+        denoised,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        35,
+        11,
+    )
+    return thr
+
+
+def _is_text_like(s: str) -> bool:
+    s = s.strip()
+    if not s:
+        return False
+    alnum_count = sum(ch.isalnum() for ch in s)
+    if alnum_count < 2:
+        return False
+    return True
+
+
 def ocr_lines(image_bgr) -> list[dict[str, Any]]:
-    rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    prepared = preprocess_for_ocr(image_bgr)
     data = pytesseract.image_to_data(
-        rgb,
+        prepared,
         lang="rus+eng",
         output_type=pytesseract.Output.DICT,
         config="--oem 1 --psm 6",
     )
 
+    h_img, w_img = prepared.shape[:2]
+    min_box_area = max(80, int(h_img * w_img * 0.00025))
+
     lines_map: dict[tuple[int, int, int], dict[str, Any]] = {}
     for i in range(len(data["text"])):
         text = (data["text"][i] or "").strip()
         conf = float(data["conf"][i]) if str(data["conf"][i]) != "-1" else -1.0
-        if not text or conf < 20:
+        if conf < 35 or not _is_text_like(text):
+            continue
+
+        left = int(data["left"][i])
+        top = int(data["top"][i])
+        width = int(data["width"][i])
+        height = int(data["height"][i])
+        if width * height < min_box_area:
             continue
 
         key = (int(data["block_num"][i]), int(data["par_num"][i]), int(data["line_num"][i]))
         if key not in lines_map:
             lines_map[key] = {
                 "words": [],
-                "x": int(data["left"][i]),
-                "y": int(data["top"][i]),
-                "w": int(data["width"][i]),
-                "h": int(data["height"][i]),
+                "x": left,
+                "y": top,
+                "w": width,
+                "h": height,
                 "conf_sum": 0.0,
                 "cnt": 0,
             }
         item = lines_map[key]
         item["words"].append(text)
-        item["x"] = min(item["x"], int(data["left"][i]))
-        item["y"] = min(item["y"], int(data["top"][i]))
-        item["w"] = max(item["w"], int(data["left"][i]) + int(data["width"][i]) - item["x"])
-        item["h"] = max(item["h"], int(data["top"][i]) + int(data["height"][i]) - item["y"])
+        item["x"] = min(item["x"], left)
+        item["y"] = min(item["y"], top)
+        item["w"] = max(item["w"], left + width - item["x"])
+        item["h"] = max(item["h"], top + height - item["y"])
         item["conf_sum"] += conf
         item["cnt"] += 1
 
     lines = []
     for _, v in sorted(lines_map.items(), key=lambda kv: (kv[1]["y"], kv[1]["x"])):
+        line_text = re.sub(r"\s+", " ", " ".join(v["words"]).strip())
+        if not _is_text_like(line_text):
+            continue
         lines.append(
             {
-                "text": re.sub(r"\s+", " ", " ".join(v["words"]).strip()),
+                "text": line_text,
                 "bbox": [v["x"], v["y"], v["w"], v["h"]],
                 "confidence": round(v["conf_sum"] / max(v["cnt"], 1), 2),
             }
@@ -82,30 +116,65 @@ def draw_lines(image_bgr, lines: list[dict[str, Any]]):
     return out
 
 
+def _normalize(s: str) -> str:
+    return re.sub(r"\s+", " ", s.strip().upper())
+
+
+def _parse_date(s: str):
+    m = re.search(r"\b(\d{2}[./-]\d{2}[./-]\d{4})\b", s)
+    if not m:
+        return None
+    value = m.group(1).replace("-", ".").replace("/", ".")
+    try:
+        dt = datetime.strptime(value, "%d.%m.%Y")
+    except ValueError:
+        return None
+    if dt.year < 1930 or dt.year > datetime.now().year + 1:
+        return None
+    return value
+
+
 def heuristic_extract(ocr_lines_text: list[str]) -> dict[str, Any]:
-    joined = " ".join(ocr_lines_text)
+    lines = [x for x in (_normalize(t) for t in ocr_lines_text) if x]
+    joined = " ".join(lines)
 
     birth_date = None
-    date_match = re.search(r"\b(\d{2}[./-]\d{2}[./-]\d{4})\b", joined)
-    if date_match:
-        birth_date = date_match.group(1).replace("-", ".").replace("/", ".")
+    anchor_idx = None
+    for i, line in enumerate(lines):
+        if "ДАТА РОЖД" in line or "BIRTH" in line:
+            anchor_idx = i
+            break
+    if anchor_idx is not None:
+        window = lines[max(0, anchor_idx - 1): min(len(lines), anchor_idx + 3)]
+        for line in window:
+            birth_date = _parse_date(line)
+            if birth_date:
+                break
+    if not birth_date:
+        birth_date = _parse_date(joined)
 
+    doc_patterns = [r"\b(\d{2}\s?\d{2}\s?\d{6})\b", r"\b(\d{9,12})\b"]
     document_number = None
-    num_match = re.search(r"\b(\d{2}\s?\d{2}\s?\d{6}|\d{9,12})\b", joined)
-    if num_match:
-        document_number = re.sub(r"\s+", " ", num_match.group(1)).strip()
+    for p in doc_patterns:
+        m = re.search(p, joined)
+        if m:
+            document_number = re.sub(r"\s+", " ", m.group(1)).strip()
+            break
 
+    stop_words = {
+        "ВОДИТЕЛЬСКОЕ", "УДОСТОВЕРЕНИЕ", "ПАСПОРТ", "РЕСПУБЛИКА", "ФЕДЕРАЦИЯ", "РОССИЙСКАЯ",
+        "ДАТА", "ВЫДАЧИ", "КОД", "ПОДРАЗДЕЛЕНИЯ", "МВД", "ПО", "ГОРОД", "ГОР",
+    }
     full_name = None
-    stop_words = {"ВОДИТЕЛЬСКОЕ", "УДОСТОВЕРЕНИЕ", "ПАСПОРТ", "РЕСПУБЛИКА", "ФЕДЕРАЦИЯ"}
-    for line in ocr_lines_text:
-        up = re.sub(r"[^А-ЯЁ\s-]", "", line.upper()).strip()
-        words = up.split()
-        if len(words) < 2 or len(words) > 4:
+    for line in lines:
+        clean = re.sub(r"[^А-ЯЁ\s-]", "", line).strip()
+        words = [w for w in clean.split() if w]
+        if not (2 <= len(words) <= 4):
             continue
         if any(w in stop_words for w in words):
             continue
-        if all(re.fullmatch(r"[А-ЯЁ-]+", w or "") for w in words):
-            full_name = up
+        if all(re.fullmatch(r"[А-ЯЁ-]{2,}", w or "") for w in words):
+            full_name = " ".join(words)
             break
 
     return {
@@ -121,8 +190,10 @@ def llm_extract(ocr_lines_text: list[str], full_text: str) -> dict[str, Any]:
 
     client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY or "dummy")
     prompt = (
-        "Ниже OCR русского документа. Извлеки главную информацию и верни ТОЛЬКО JSON с ключами: "
-        "full_name, birth_date, document_number. Формат даты DD.MM.YYYY, если поле не найдено — null.\n"
+        "Ниже OCR русского документа после фильтрации шума. "
+        "Игнорируй служебные строки (МВД, код подразделения, заголовки). "
+        "Верни ТОЛЬКО JSON с ключами: full_name, birth_date, document_number. "
+        "Дата: DD.MM.YYYY, если нет — null.\n"
         f"OCR lines: {json.dumps(ocr_lines_text, ensure_ascii=False)}\n"
         f"OCR full_text: {full_text}"
     )
@@ -196,7 +267,11 @@ async def process(file: UploadFile = File(...)) -> JSONResponse:
     payload = {
         "input_image": file.filename,
         "annotated_image": str(annotated_path),
-        "ocr": {"lines": lines, "full_text": full_text},
+        "ocr": {
+            "lines": lines,
+            "full_text": full_text,
+            "lines_count": len(lines),
+        },
         "fields": fields,
         "extractor": {
             "mode": used,

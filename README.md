@@ -1,17 +1,24 @@
-# OCR API для тестового: запускается без Ollama
+# OCR API для тестового: лучше фильтрация шума + точнее поля
 
-Сделал так, чтобы **просто поднять Docker и сразу получить распознавание**.
+Сервис запускается сразу через Docker и по умолчанию **без Ollama**.
 
-## Ключевая идея
+## Что улучшено
 
-- По умолчанию сервис работает в режиме `heuristic`:
-  - OCR собирает весь текст по строкам
-  - локально извлекаются `full_name`, `birth_date`, `document_number`
-  - **никакой Ollama запускать не нужно**
+- OCR теперь идет через предобработку изображения (denoise + adaptive threshold), чтобы меньше ловить шум/фон.
+- Добавлена фильтрация мусора:
+  - минимальный confidence слова
+  - отбрасывание слишком маленьких боксов
+  - отбрасывание «непохожих на текст» токенов
+- Эвристики полей стали точнее:
+  - дата рождения ищется с учетом якорей (`ДАТА РОЖД...` / `BIRTH`)
+  - номер документа приоритетно формата `XX XX XXXXXX`
+  - ФИО фильтруется от служебных слов (`МВД`, `код`, `дата`, `республика` и т.п.)
 
-- Если нужно, можно включить режим `api`:
-  - OCR строки + full text отправляются во внешний OpenAI-compatible LLM
-  - например в Qwen/Ollama endpoint
+## Режимы
+
+- `EXTRACTOR_MODE=heuristic` (по умолчанию): OCR + локальное извлечение полей
+- `EXTRACTOR_MODE=api`: OCR + внешний OpenAI-compatible LLM
+  - если LLM упал/вернул мусор, есть fallback на heuristic
 
 ## Быстрый старт (без Ollama)
 
@@ -36,16 +43,17 @@ curl -X POST "http://localhost:8000/process" \
 
 - `ocr.lines` — строки OCR + bbox + confidence
 - `ocr.full_text` — весь OCR-текст
+- `ocr.lines_count` — сколько строк осталось после фильтрации
 - `fields`:
   - `full_name`
   - `birth_date`
   - `document_number`
 - `extractor.mode`:
-  - `heuristic` (без LLM)
-  - `api` (через внешний LLM)
-  - `heuristic_fallback` (если в `api` режиме LLM упал)
+  - `heuristic`
+  - `api`
+  - `heuristic_fallback`
 
-## Если захочешь подключить Qwen через API
+## Опционально: Qwen через API
 
 В `.env`:
 
@@ -55,9 +63,3 @@ LLM_BASE_URL=http://host.docker.internal:11434/v1
 LLM_API_KEY=ollama
 LLM_MODEL=qwen2.5:7b-instruct
 ```
-
-## Почему это удобно для задания
-
-- Один `docker compose up --build` и сервис уже рабочий
-- Нет обязательной внешней зависимости на Ollama
-- При этом можно включить LLM-режим без переписывания кода
