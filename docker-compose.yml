@@ -5,8 +5,9 @@ services:
     ports:
       - "8000:8000"
     environment:
-      LLM_BASE_URL: ${LLM_BASE_URL:-http://host.docker.internal:11434/v1}
-      LLM_API_KEY: ${LLM_API_KEY:-ollama}
+      EXTRACTOR_MODE: ${EXTRACTOR_MODE:-heuristic}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct}
       OUTPUT_DIR: /app/outputs
     volumes:

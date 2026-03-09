@@ -11,13 +11,18 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from openai import OpenAI
 
-app = FastAPI(title="doc-ocr-llm", version="2.0.0")
+app = FastAPI(title="doc-ocr-llm", version="2.1.0")
 
 OUT_DIR = Path(os.getenv("OUTPUT_DIR", "outputs"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://host.docker.internal:11434/v1")
-LLM_API_KEY = os.getenv("LLM_API_KEY", "ollama")
+# По умолчанию НЕ требуем Ollama/внешний LLM.
+# Режимы:
+# - heuristic (default): OCR + локальное извлечение полей
+# - api: OCR + внешний OpenAI-compatible LLM
+EXTRACTOR_MODE = os.getenv("EXTRACTOR_MODE", "heuristic").lower()
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "")
+LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7b-instruct")
 
 
@@ -77,13 +82,47 @@ def draw_lines(image_bgr, lines: list[dict[str, Any]]):
     return out
 
 
-def extract_with_llm(ocr_lines_text: list[str], full_text: str) -> dict[str, Any]:
-    client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY)
+def heuristic_extract(ocr_lines_text: list[str]) -> dict[str, Any]:
+    joined = " ".join(ocr_lines_text)
+
+    birth_date = None
+    date_match = re.search(r"\b(\d{2}[./-]\d{2}[./-]\d{4})\b", joined)
+    if date_match:
+        birth_date = date_match.group(1).replace("-", ".").replace("/", ".")
+
+    document_number = None
+    num_match = re.search(r"\b(\d{2}\s?\d{2}\s?\d{6}|\d{9,12})\b", joined)
+    if num_match:
+        document_number = re.sub(r"\s+", " ", num_match.group(1)).strip()
+
+    full_name = None
+    stop_words = {"ВОДИТЕЛЬСКОЕ", "УДОСТОВЕРЕНИЕ", "ПАСПОРТ", "РЕСПУБЛИКА", "ФЕДЕРАЦИЯ"}
+    for line in ocr_lines_text:
+        up = re.sub(r"[^А-ЯЁ\s-]", "", line.upper()).strip()
+        words = up.split()
+        if len(words) < 2 or len(words) > 4:
+            continue
+        if any(w in stop_words for w in words):
+            continue
+        if all(re.fullmatch(r"[А-ЯЁ-]+", w or "") for w in words):
+            full_name = up
+            break
+
+    return {
+        "full_name": full_name,
+        "birth_date": birth_date,
+        "document_number": document_number,
+    }
+
+
+def llm_extract(ocr_lines_text: list[str], full_text: str) -> dict[str, Any]:
+    if not LLM_BASE_URL:
+        raise ValueError("LLM_BASE_URL is empty")
+
+    client = OpenAI(base_url=LLM_BASE_URL, api_key=LLM_API_KEY or "dummy")
     prompt = (
-        "Ниже OCR русского документа. "
-        "Извлеки главную информацию и верни ТОЛЬКО JSON с ключами: "
-        "full_name, birth_date, document_number. "
-        "Формат даты DD.MM.YYYY, если поле не найдено — null.\n"
+        "Ниже OCR русского документа. Извлеки главную информацию и верни ТОЛЬКО JSON с ключами: "
+        "full_name, birth_date, document_number. Формат даты DD.MM.YYYY, если поле не найдено — null.\n"
         f"OCR lines: {json.dumps(ocr_lines_text, ensure_ascii=False)}\n"
         f"OCR full_text: {full_text}"
     )
@@ -112,7 +151,12 @@ def extract_with_llm(ocr_lines_text: list[str], full_text: str) -> dict[str, Any
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    return {"status": "ok", "llm_model": LLM_MODEL, "llm_base_url": LLM_BASE_URL}
+    return {
+        "status": "ok",
+        "extractor_mode": EXTRACTOR_MODE,
+        "llm_model": LLM_MODEL if EXTRACTOR_MODE == "api" else None,
+        "llm_base_url": LLM_BASE_URL if EXTRACTOR_MODE == "api" else None,
+    }
 
 
 @app.post("/process")
@@ -127,36 +171,38 @@ async def process(file: UploadFile = File(...)) -> JSONResponse:
     if image is None:
         raise HTTPException(status_code=400, detail="Cannot read image")
 
-    # супер-просто: OCR по исходному изображению, без сложной доп. логики
     lines = ocr_lines(image)
     line_texts = [x["text"] for x in lines]
     full_text = "\n".join(line_texts)
 
     try:
-        fields = extract_with_llm(line_texts, full_text)
-        llm_error = None
+        if EXTRACTOR_MODE == "api":
+            fields = llm_extract(line_texts, full_text)
+            used = "api"
+        else:
+            fields = heuristic_extract(line_texts)
+            used = "heuristic"
+        extractor_error = None
     except Exception as e:
-        fields = {"full_name": None, "birth_date": None, "document_number": None}
-        llm_error = str(e)
+        fields = heuristic_extract(line_texts)
+        used = "heuristic_fallback"
+        extractor_error = str(e)
 
     stem = Path(file.filename or "input").stem
     annotated_path = OUT_DIR / f"{stem}_annotated.jpg"
     json_path = OUT_DIR / f"{stem}_result.json"
-
     cv2.imwrite(str(annotated_path), draw_lines(image, lines))
 
     payload = {
         "input_image": file.filename,
         "annotated_image": str(annotated_path),
-        "ocr": {
-            "lines": lines,
-            "full_text": full_text,
-        },
+        "ocr": {"lines": lines, "full_text": full_text},
         "fields": fields,
-        "llm": {
-            "model": LLM_MODEL,
-            "base_url": LLM_BASE_URL,
-            "error": llm_error,
+        "extractor": {
+            "mode": used,
+            "error": extractor_error,
+            "llm_model": LLM_MODEL if used.startswith("api") else None,
+            "llm_base_url": LLM_BASE_URL if used.startswith("api") else None,
         },
     }
 
