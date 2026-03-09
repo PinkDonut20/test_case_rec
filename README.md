@@ -59,3 +59,6 @@ LLM_MODEL=qwen2.5:7b-instruct
 - `ocr.lines` / `ocr.full_text` / `ocr.lines_count`
 - `fields.full_name`, `fields.birth_date`, `fields.document_number`
 - `extractor.mode`, `extractor.error`
+
+<img width="781" height="480" alt="image" src="https://github.com/user-attachments/assets/a5e0e4d2-1e35-43f0-9182-326b94d92e56" />
+
