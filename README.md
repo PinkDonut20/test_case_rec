@@ -3,7 +3,7 @@
 ## Что важно
 
 - Текст извлекается через EasyOCR multi-pass.
-- Финализация полей (`full_name`, `birth_date`, `document_number`) выполняется моделью:
+- Финализация полей (`full_name`, `birth_date`, `document_number`) выполняется моделью по всем OCR-строкам и полному тексту:
   - по умолчанию локальная модель HF в режиме `text-generation` (`EXTRACTOR_MODE=hf`),
   - альтернативно внешний endpoint (`EXTRACTOR_MODE=api`).
 - При ошибке модели включается безопасный fallback на локальные эвристики.

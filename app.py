@@ -333,27 +333,55 @@ def _postprocess_fields(fields: dict[str, Any], fallback: dict[str, Any]) -> dic
     return out
 
 
-def hf_extract(ocr_lines_text: list[str], full_text: str) -> dict[str, Any]:
+def hf_extract(lines: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str | None]:
+    line_texts = [x["text"] for x in lines]
+    full_text = "\n".join(line_texts)
     pipe = get_hf_pipe()
+
     prompt = (
-        "Извлеки поля из OCR текста документа и верни строго JSON: "
-        "{\"full_name\": ..., \"birth_date\": ..., \"document_number\": ...}. "
-        "Нельзя использовать заголовки документа как ФИО. "
-        "Если поле не найдено, ставь null.\n"
-        f"OCR lines: {json.dumps(ocr_lines_text, ensure_ascii=False)}\n"
+        "Извлеки поля full_name, birth_date, document_number из OCR. "
+        "Не используй заголовки документа как ФИО. Верни только JSON.\n"
+        f"OCR lines: {json.dumps(line_texts, ensure_ascii=False)}\n"
         f"OCR full_text: {full_text}"
     )
-    out = pipe(prompt, max_new_tokens=128, do_sample=False)
-    text = out[0]["generated_text"]
-    m = re.search(r"\{[\s\S]*\}", text)
+
+    out = pipe(prompt, max_new_tokens=160, do_sample=False, return_full_text=False)
+    txt = out[0]["generated_text"]
+
+    # Ищем первый валидный JSON-объект, игнорируя всё после него
+    m = re.search(r"\{[\s\S]*?\}", txt)
     if not m:
-        raise ValueError(f"HF model did not return JSON: {text[:300]}")
-    parsed = json.loads(m.group(0))
+        return None, f"HF model returned non-JSON: {txt[:200]}"
+
+    try:
+        obj = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        # Если первый матч не парсится — пробуем жадный поиск
+        m = re.search(r"\{[\s\S]*\}", txt)
+        if not m:
+            return None, f"No valid JSON found: {txt[:200]}"
+
+        # Берём подстроку до первого закрывающего объект }
+        raw = m.group(0)
+        depth, end_idx = 0, 0
+        for i, ch in enumerate(raw):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end_idx = i + 1
+                    break
+        try:
+            obj = json.loads(raw[:end_idx])
+        except json.JSONDecodeError as e:
+            return None, f"JSONDecodeError: {e} | raw: {raw[:200]}"
+
     return {
-        "full_name": parsed.get("full_name"),
-        "birth_date": parsed.get("birth_date"),
-        "document_number": parsed.get("document_number"),
-    }
+        "full_name": obj.get("full_name"),
+        "birth_date": obj.get("birth_date"),
+        "document_number": obj.get("document_number"),
+    }, None
 
 
 def api_extract(ocr_lines_text: list[str], full_text: str) -> dict[str, Any]:
@@ -427,7 +455,9 @@ async def process(file: UploadFile = File(...)) -> JSONResponse:
             fields = _postprocess_fields(raw_fields, heuristic_fields)
             used = "api"
         elif EXTRACTOR_MODE == "hf":
-            raw_fields = hf_extract(line_texts, full_text)
+            raw_fields, hf_error = hf_extract(lines)
+            if raw_fields is None:
+                raise ValueError(hf_error or "HF extraction failed")
             fields = _postprocess_fields(raw_fields, heuristic_fields)
             used = "hf"
         else:
