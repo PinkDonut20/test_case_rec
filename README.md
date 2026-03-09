@@ -1,56 +1,36 @@
-# Финальная версия: OCR → LLM → JSON (API + Docker)
+# Финальная версия (супер просто): OCR строки → Qwen → JSON
 
-Сделал **максимально простой и быстрый** pipeline под твой сценарий:
-1. OCR собирает текст **по строкам**
-2. строки уходят в LLM
-3. LLM возвращает JSON с ключевыми полями
+Сделал максимально просто под тестовое:
+1. Берем изображение
+2. OCR собирает весь текст по строкам (рус+англ)
+3. Отдаем строки + общий текст в LLM (Qwen)
+4. Возвращаем JSON с главными полями
 
-## Что внутри
+## Что возвращает API
 
-- `app.py` — FastAPI сервис
-- `Dockerfile` + `docker-compose.yml` — запуск одной командой
-- `requirements.txt`
-- `outputs/` — артефакты
-
-## Логика
-
-`/process`:
-- принимает картинку
-- выравнивает документ (OpenCV)
-- распознает строки OCR (Tesseract `rus+eng`)
-- отправляет список строк в LLM
-- получает и возвращает JSON:
+`POST /process` вернет:
+- `ocr.lines` — все строки OCR с bbox и confidence
+- `ocr.full_text` — весь OCR-текст одной строковой массой
+- `fields` — главная инфа из LLM:
   - `full_name`
   - `birth_date`
   - `document_number`
-- сохраняет:
-  - выровненное изображение
-  - изображение с line-box
-  - полный `*_result.json`
+- `llm.error` — текст ошибки, если LLM не смогла вернуть JSON
 
-## Почему так (быстро и под MacBook)
+## Быстрый запуск на MacBook
 
-- OCR через Tesseract — лёгкий CPU вариант
-- LLM через OpenAI-compatible endpoint (`LLM_BASE_URL`), по умолчанию под Ollama на Mac:
-  - `http://host.docker.internal:11434/v1`
-- Никаких сложных GPU зависимостей в контейнере
-
-## Быстрый старт (MacBook)
-
-### 1) Подними Ollama и модель
+### 1) Поднять Ollama + модель
 
 ```bash
 ollama serve
 ollama pull qwen2.5:7b-instruct
 ```
 
-### 2) Запусти API
+### 2) Запуск API
 
 ```bash
 docker compose up --build
 ```
-
-API будет на `http://localhost:8000`.
 
 ### 3) Проверка
 
@@ -58,7 +38,7 @@ API будет на `http://localhost:8000`.
 curl http://localhost:8000/health
 ```
 
-### 4) Обработка изображения
+### 4) Обработка файла
 
 ```bash
 curl -X POST "http://localhost:8000/process" \
@@ -67,13 +47,14 @@ curl -X POST "http://localhost:8000/process" \
 
 ## ENV
 
-Скопируй `.env.example` в `.env` при необходимости:
+В `.env`:
+- `LLM_BASE_URL` (по умолчанию `http://host.docker.internal:11434/v1`)
+- `LLM_API_KEY` (для Ollama можно `ollama`)
+- `LLM_MODEL` (по умолчанию `qwen2.5:7b-instruct`)
 
-- `LLM_BASE_URL` — URL LLM API
-- `LLM_API_KEY` — ключ (для Ollama можно `ollama`)
-- `LLM_MODEL` — модель (`qwen2.5:7b-instruct` по умолчанию)
+## Почему это ок для задания
 
-## Важно
-
-- По требованию: LLM используется как основной extractor.
-- Если LLM вернет невалидный ответ, ошибка кладется в `llm.error`, поля будут `null`.
+- Логика прозрачная: OCR -> LLM -> JSON
+- Без переусложнения
+- Быстро поднимается в Docker
+- На макбуке работает CPU-only
