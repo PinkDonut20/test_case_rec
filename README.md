@@ -1,4 +1,5 @@
 # Document OCR Pipeline (тестовое задание, финальная версия)
+![telegram-cloud-photo-size-2-5298638571566731998-y](https://github.com/user-attachments/assets/d20ee3db-5611-4fb5-9ad6-d5fd53ad4056)
 
 ## Что это
 
