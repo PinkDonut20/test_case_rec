@@ -67,11 +67,11 @@ with gr.Blocks(title="Document OCR Demo", theme=gr.themes.Soft()) as demo:
             image_out = gr.Image(label="Результат OCR (боксы)")
 
     full_text_box = gr.Textbox(label="Полный OCR-текст", lines=10)
-    fields_box = gr.Code(label="Извлечённые поля", language="json")
+    fields_box = gr.Textbox(label="Извлечённые поля (JSON)", lines=8)
 
     with gr.Row():
         json_file = gr.File(label="Сохранённый JSON")
-    payload_box = gr.Code(label="Полный ответ API", language="json")
+    payload_box = gr.Textbox(label="Полный ответ API (JSON)", lines=14)
 
     run_btn.click(
         process_image,
@@ -81,7 +81,7 @@ with gr.Blocks(title="Document OCR Demo", theme=gr.themes.Soft()) as demo:
 
 
 if __name__ == "__main__":
-    share = os.getenv("GRADIO_SHARE", "1") == "1"
+    share = os.getenv("GRADIO_SHARE", "0") == "1"
     demo.launch(
         server_name="0.0.0.0",
         server_port=7860,
