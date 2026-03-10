@@ -1,90 +1,119 @@
 import json
 import os
 from pathlib import Path
-from typing import Any
 
-import gradio as gr
 import requests
-from PIL import Image, ImageDraw
+from flask import Flask, Response, render_template_string, request
 
 API_URL = os.getenv("OCR_API_URL", "http://localhost:8000/process")
 UI_OUT_DIR = Path(os.getenv("UI_OUTPUT_DIR", "ui_outputs"))
 UI_OUT_DIR.mkdir(parents=True, exist_ok=True)
 
+app = Flask(__name__)
 
-def _draw_boxes(image: Image.Image, lines: list[dict[str, Any]]) -> Image.Image:
-    out = image.convert("RGB").copy()
-    draw = ImageDraw.Draw(out)
-    for line in lines:
-        bbox = line.get("bbox") or []
-        if len(bbox) != 4:
-            continue
-        x, y, w, h = [int(v) for v in bbox]
-        draw.rectangle((x, y, x + w, y + h), outline=(0, 255, 0), width=3)
-    return out
+HTML = """
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Document OCR UI</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; margin: 2rem; background:#0f172a; color:#e2e8f0; }
+    .card { background:#111827; border:1px solid #334155; border-radius:14px; padding:1rem 1.2rem; margin-bottom:1rem; }
+    .btn { background:#2563eb; color:white; border:0; border-radius:10px; padding:0.6rem 1rem; cursor:pointer; }
+    .muted { color:#94a3b8; }
+    pre { background:#020617; border:1px solid #334155; border-radius:10px; padding:1rem; overflow:auto; }
+    input[type=file] { margin-bottom: 0.8rem; }
+    a { color:#60a5fa; }
+  </style>
+</head>
+<body>
+  <h1>OCR документов</h1>
+  <p class="muted">Загрузите изображение и нажмите «Распознать». UI отправит файл в API и сохранит JSON локально.</p>
+
+  <div class="card">
+    <form method="post" action="/process" enctype="multipart/form-data">
+      <input type="file" name="file" accept="image/*" required /><br>
+      <button class="btn" type="submit">Распознать</button>
+    </form>
+  </div>
+
+  {% if error %}
+  <div class="card">
+    <h3>Ошибка</h3>
+    <pre>{{ error }}</pre>
+  </div>
+  {% endif %}
+
+  {% if result %}
+  <div class="card">
+    <h3>Извлечённые поля</h3>
+    <pre>{{ fields }}</pre>
+  </div>
+
+  <div class="card">
+    <h3>Полный OCR текст</h3>
+    <pre>{{ full_text }}</pre>
+  </div>
+
+  <div class="card">
+    <h3>Полный JSON</h3>
+    <pre>{{ result }}</pre>
+    <p>Сохранено в: <code>{{ json_path }}</code> | <a href="/download-json">Скачать JSON</a></p>
+  </div>
+  {% endif %}
+</body>
+</html>
+"""
 
 
-def process_image(image: Image.Image):
-    if image is None:
-        return None, "", "", None, "Загрузите изображение"
+@app.get("/")
+def index():
+    return render_template_string(HTML, result=None, fields=None, full_text=None, json_path=None, error=None)
 
-    temp_path = UI_OUT_DIR / "_upload_tmp.jpg"
-    image.save(temp_path, format="JPEG")
 
-    with temp_path.open("rb") as f:
-        resp = requests.post(API_URL, files={"file": ("document.jpg", f, "image/jpeg")}, timeout=180)
+@app.post("/process")
+def process():
+    uploaded = request.files.get("file")
+    if uploaded is None:
+        return render_template_string(HTML, result=None, fields=None, full_text=None, json_path=None, error="Файл не передан")
+
+    files = {"file": (uploaded.filename or "document.jpg", uploaded.stream, uploaded.mimetype or "image/jpeg")}
+
+    try:
+        resp = requests.post(API_URL, files=files, timeout=240)
+    except Exception as e:
+        return render_template_string(HTML, result=None, fields=None, full_text=None, json_path=None, error=f"Ошибка запроса к API: {e}")
 
     if resp.status_code != 200:
-        return None, "", "", None, f"Ошибка API: {resp.status_code} {resp.text[:500]}"
+        return render_template_string(
+            HTML,
+            result=None,
+            fields=None,
+            full_text=None,
+            json_path=None,
+            error=f"API вернул {resp.status_code}: {resp.text[:1000]}",
+        )
 
     payload = resp.json()
-    ocr_lines = payload.get("ocr", {}).get("lines", [])
-    full_text = payload.get("ocr", {}).get("full_text", "")
-    fields = payload.get("fields", {})
-
-    annotated = _draw_boxes(image, ocr_lines)
-
     out_path = UI_OUT_DIR / "result.json"
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    fields_json = json.dumps(fields, ensure_ascii=False, indent=2)
-    payload_json = json.dumps(payload, ensure_ascii=False, indent=2)
-    return annotated, full_text, fields_json, str(out_path), payload_json
+    fields = json.dumps(payload.get("fields", {}), ensure_ascii=False, indent=2)
+    full_text = payload.get("ocr", {}).get("full_text", "")
+    pretty = json.dumps(payload, ensure_ascii=False, indent=2)
+
+    return render_template_string(HTML, result=pretty, fields=fields, full_text=full_text, json_path=str(out_path), error=None)
 
 
-with gr.Blocks(title="Document OCR Demo", theme=gr.themes.Soft()) as demo:
-    gr.Markdown("""
-# OCR документов
-Загрузите фото документа, нажмите **Распознать**.
-Приложение отправит изображение в API (`/process`), покажет боксы OCR и сохранит JSON.
-""")
-
-    with gr.Row():
-        with gr.Column(scale=1):
-            image_in = gr.Image(label="Изображение документа", type="pil")
-            run_btn = gr.Button("Распознать", variant="primary")
-        with gr.Column(scale=1):
-            image_out = gr.Image(label="Результат OCR (боксы)")
-
-    full_text_box = gr.Textbox(label="Полный OCR-текст", lines=10)
-    fields_box = gr.Textbox(label="Извлечённые поля (JSON)", lines=8)
-
-    with gr.Row():
-        json_file = gr.File(label="Сохранённый JSON")
-    payload_box = gr.Textbox(label="Полный ответ API (JSON)", lines=14)
-
-    run_btn.click(
-        process_image,
-        inputs=[image_in],
-        outputs=[image_out, full_text_box, fields_box, json_file, payload_box],
-    )
+@app.get("/download-json")
+def download_json():
+    out_path = UI_OUT_DIR / "result.json"
+    if not out_path.exists():
+        return Response("result.json пока не создан", status=404)
+    return Response(out_path.read_bytes(), mimetype="application/json", headers={"Content-Disposition": "attachment; filename=result.json"})
 
 
 if __name__ == "__main__":
-    share = os.getenv("GRADIO_SHARE", "0") == "1"
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=7860,
-        share=share,
-        show_api=False,
-    )
+    app.run(host="0.0.0.0", port=7860, debug=False)
