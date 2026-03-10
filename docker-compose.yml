@@ -16,3 +16,18 @@ services:
       OUTPUT_DIR: /app/outputs
     volumes:
       - ./outputs:/app/outputs
+
+  doc-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    container_name: doc-ui
+    depends_on:
+      - doc-api
+    ports:
+      - "7860:7860"
+    environment:
+      OCR_API_URL: http://doc-api:8000/process
+      UI_OUTPUT_DIR: /app/ui_outputs
+    volumes:
+      - ./ui_outputs:/app/ui_outputs

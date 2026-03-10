@@ -1,0 +1,15 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+COPY ui_requirements.txt .
+RUN pip install --no-cache-dir -r ui_requirements.txt
+
+COPY ui_app.py .
+RUN mkdir -p /app/ui_outputs
+
+EXPOSE 7860
+CMD ["python", "ui_app.py"]

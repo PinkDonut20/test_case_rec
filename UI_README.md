@@ -1,38 +1,27 @@
 # UI приложение (Linux/macOS)
 
-Отдельное простое UI для вашего API.
+Отдельное UI для загрузки изображения и запуска распознавания через API.
 
-## Что делает
-- Загружает изображение документа.
-- Отправляет его в `POST /process` вашего backend API.
-- Показывает OCR-боксы поверх изображения.
-- Показывает OCR-текст и извлечённые поля.
-- Сохраняет полный JSON в `ui_outputs/result.json`.
-
-## Запуск
-
-1) Поднимите backend API (как раньше):
+## Запуск одной командой (API + UI)
 
 ```bash
 docker compose up --build
 ```
 
-2) В отдельном терминале запустите UI:
+После старта:
+- API: `http://localhost:8000/health`
+- UI: `http://localhost:7860`
+
+## Что в UI
+- загрузка изображения,
+- кнопка "Распознать",
+- отрисованные OCR-боксы,
+- полный OCR-текст,
+- JSON с полями,
+- сохранённый файл `ui_outputs/result.json`.
+
+## Если нужен только API
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r ui_requirements.txt
-python ui_app.py
+docker compose up --build doc-api
 ```
-
-3) Откройте в браузере:
-
-```text
-http://localhost:7860
-```
-
-## Настройки
-
-- `OCR_API_URL` — URL backend `/process` (по умолчанию `http://localhost:8000/process`).
-- `UI_OUTPUT_DIR` — куда сохранять JSON UI (по умолчанию `ui_outputs`).

@@ -79,7 +79,11 @@ FastAPI:
 docker compose up --build
 ```
 
-Проверка:
+После запуска доступны:
+- API: `http://localhost:8000`
+- UI: `http://localhost:7860`
+
+Проверка API:
 
 ```bash
 curl http://localhost:8000/health
@@ -132,3 +136,9 @@ LLM_MODEL=qwen2.5:7b-instruct
 
 Проект подготовлен под запуск в Linux + Docker Compose и учитывает CPU/GPU сценарии.
 Рекомендованный способ проверки — `docker compose up --build` и запрос на `POST /process`.
+
+
+## UI (для ручного теста)
+
+Откройте `http://localhost:7860`, загрузите изображение, нажмите **Распознать**.
+UI покажет OCR-боксы, текст и сохранит `ui_outputs/result.json`.
