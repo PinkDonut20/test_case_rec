@@ -1,9 +1,12 @@
+import base64
+import io
 import json
 import os
 from pathlib import Path
 
 import requests
 from flask import Flask, Response, render_template_string, request
+from PIL import Image, ImageDraw
 
 API_URL = os.getenv("OCR_API_URL", "http://localhost:8000/process")
 UI_OUT_DIR = Path(os.getenv("UI_OUTPUT_DIR", "ui_outputs"))
@@ -26,6 +29,7 @@ HTML = """
     pre { background:#020617; border:1px solid #334155; border-radius:10px; padding:1rem; overflow:auto; }
     input[type=file] { margin-bottom: 0.8rem; }
     a { color:#60a5fa; }
+    img { max-width: 100%; border-radius: 10px; border:1px solid #334155; }
   </style>
 </head>
 <body>
@@ -43,6 +47,13 @@ HTML = """
   <div class="card">
     <h3>Ошибка</h3>
     <pre>{{ error }}</pre>
+  </div>
+  {% endif %}
+
+  {% if annotated_b64 %}
+  <div class="card">
+    <h3>Разметка OCR (боксы)</h3>
+    <img src="data:image/jpeg;base64,{{ annotated_b64 }}" alt="OCR boxes" />
   </div>
   {% endif %}
 
@@ -68,23 +79,38 @@ HTML = """
 """
 
 
+def _draw_boxes(image_bytes: bytes, lines: list[dict]) -> str:
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    draw = ImageDraw.Draw(img)
+    for line in lines:
+        bbox = line.get("bbox") or []
+        if len(bbox) != 4:
+            continue
+        x, y, w, h = [int(v) for v in bbox]
+        draw.rectangle((x, y, x + w, y + h), outline=(0, 255, 0), width=3)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
+
+
 @app.get("/")
 def index():
-    return render_template_string(HTML, result=None, fields=None, full_text=None, json_path=None, error=None)
+    return render_template_string(HTML, result=None, fields=None, full_text=None, json_path=None, error=None, annotated_b64=None)
 
 
 @app.post("/process")
 def process():
     uploaded = request.files.get("file")
     if uploaded is None:
-        return render_template_string(HTML, result=None, fields=None, full_text=None, json_path=None, error="Файл не передан")
+        return render_template_string(HTML, result=None, fields=None, full_text=None, json_path=None, error="Файл не передан", annotated_b64=None)
 
-    files = {"file": (uploaded.filename or "document.jpg", uploaded.stream, uploaded.mimetype or "image/jpeg")}
+    image_bytes = uploaded.read()
+    files = {"file": (uploaded.filename or "document.jpg", io.BytesIO(image_bytes), uploaded.mimetype or "image/jpeg")}
 
     try:
         resp = requests.post(API_URL, files=files, timeout=240)
     except Exception as e:
-        return render_template_string(HTML, result=None, fields=None, full_text=None, json_path=None, error=f"Ошибка запроса к API: {e}")
+        return render_template_string(HTML, result=None, fields=None, full_text=None, json_path=None, error=f"Ошибка запроса к API: {e}", annotated_b64=None)
 
     if resp.status_code != 200:
         return render_template_string(
@@ -94,9 +120,13 @@ def process():
             full_text=None,
             json_path=None,
             error=f"API вернул {resp.status_code}: {resp.text[:1000]}",
+            annotated_b64=None,
         )
 
     payload = resp.json()
+    lines = payload.get("ocr", {}).get("lines", [])
+    annotated_b64 = _draw_boxes(image_bytes, lines)
+
     out_path = UI_OUT_DIR / "result.json"
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -104,7 +134,15 @@ def process():
     full_text = payload.get("ocr", {}).get("full_text", "")
     pretty = json.dumps(payload, ensure_ascii=False, indent=2)
 
-    return render_template_string(HTML, result=pretty, fields=fields, full_text=full_text, json_path=str(out_path), error=None)
+    return render_template_string(
+        HTML,
+        result=pretty,
+        fields=fields,
+        full_text=full_text,
+        json_path=str(out_path),
+        error=None,
+        annotated_b64=annotated_b64,
+    )
 
 
 @app.get("/download-json")

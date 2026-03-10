@@ -33,6 +33,16 @@ _reader = None
 _hf_pipe = None
 
 
+@app.on_event("startup")
+def preload_models() -> None:
+    if os.getenv("PRELOAD_MODELS", "1") != "1":
+        return
+    get_reader()
+    if EXTRACTOR_MODE == "hf":
+        get_hf_pipe()
+
+
+
 def get_reader() -> easyocr.Reader:
     global _reader
     if _reader is None:

@@ -113,6 +113,7 @@ HF_MODEL=Qwen/Qwen2.5-0.5B-Instruct
 LLM_BASE_URL=
 LLM_API_KEY=
 LLM_MODEL=qwen2.5:7b-instruct
+PRELOAD_MODELS=1
 ```
 
 ---
@@ -142,3 +143,8 @@ LLM_MODEL=qwen2.5:7b-instruct
 
 Откройте `http://localhost:7860`, загрузите изображение, нажмите **Распознать**.
 UI покажет OCR-боксы, текст и сохранит `ui_outputs/result.json`.
+
+
+## Примечание по скорости запуска
+
+В `docker-compose.yml` подключены named volumes для кэшей моделей (`easyocr_cache`, `hf_cache`), поэтому модели скачиваются один раз и не переустанавливаются при каждом старте контейнеров.
