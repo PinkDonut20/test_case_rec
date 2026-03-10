@@ -9,6 +9,8 @@
 3. извлекает структурированные поля,
 4. возвращает JSON и сохраняет артефакты обработки.
 
+Проект сделан как self-contained репозиторий для запуска через Docker Compose.
+
 ---
 
 ## Архитектура
@@ -77,7 +79,11 @@ FastAPI:
 docker compose up --build
 ```
 
-Проверка:
+После запуска доступны:
+- API: `http://localhost:8000`
+- UI: `http://localhost:7860`
+
+Проверка API:
 
 ```bash
 curl http://localhost:8000/health
@@ -107,6 +113,7 @@ HF_MODEL=Qwen/Qwen2.5-0.5B-Instruct
 LLM_BASE_URL=
 LLM_API_KEY=
 LLM_MODEL=qwen2.5:7b-instruct
+PRELOAD_MODELS=1
 ```
 
 ---
@@ -130,3 +137,14 @@ LLM_MODEL=qwen2.5:7b-instruct
 
 Проект подготовлен под запуск в Linux + Docker Compose и учитывает CPU/GPU сценарии.
 Рекомендованный способ проверки — `docker compose up --build` и запрос на `POST /process`.
+
+
+## UI (для ручного теста)
+
+Откройте `http://localhost:7860`, загрузите изображение, нажмите **Распознать**.
+UI покажет OCR-боксы, текст и сохранит `ui_outputs/result.json`.
+
+
+## Примечание по скорости запуска
+
+В `docker-compose.yml` подключены named volumes для кэшей моделей (`easyocr_cache`, `hf_cache`), поэтому модели скачиваются один раз и не переустанавливаются при каждом старте контейнеров.

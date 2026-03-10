@@ -13,6 +13,31 @@ services:
       LLM_BASE_URL: ${LLM_BASE_URL:-}
       LLM_API_KEY: ${LLM_API_KEY:-}
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct}
+      PRELOAD_MODELS: ${PRELOAD_MODELS:-1}
       OUTPUT_DIR: /app/outputs
+      EASYOCR_MODULE_PATH: /opt/easyocr
+      HF_HOME: /opt/hf
+      TRANSFORMERS_CACHE: /opt/hf/transformers
     volumes:
       - ./outputs:/app/outputs
+      - easyocr_cache:/opt/easyocr
+      - hf_cache:/opt/hf
+
+  doc-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
+    container_name: doc-ui
+    depends_on:
+      - doc-api
+    ports:
+      - "7860:7860"
+    environment:
+      OCR_API_URL: http://doc-api:8000/process
+      UI_OUTPUT_DIR: /app/ui_outputs
+    volumes:
+      - ./ui_outputs:/app/ui_outputs
+
+volumes:
+  easyocr_cache:
+  hf_cache:
