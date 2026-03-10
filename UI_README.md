@@ -25,3 +25,8 @@ docker compose up --build
 ```bash
 docker compose up --build doc-api
 ```
+
+## Параметры UI
+
+- `GRADIO_SHARE=1` (по умолчанию) — включает share-ссылку, чтобы Gradio не падал в окружениях, где localhost внутри контейнера недоступен.
+- `GRADIO_SHARE=0` — отключить share-ссылку.

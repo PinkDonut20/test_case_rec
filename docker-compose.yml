@@ -29,5 +29,6 @@ services:
     environment:
       OCR_API_URL: http://doc-api:8000/process
       UI_OUTPUT_DIR: /app/ui_outputs
+      GRADIO_SHARE: ${GRADIO_SHARE:-1}
     volumes:
       - ./ui_outputs:/app/ui_outputs
