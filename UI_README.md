@@ -1,23 +1,28 @@
-# UI приложение (Linux/macOS)
+# UI приложение (Linux/macOS) — Doc OCR Studio
 
-Отдельное простое UI для вашего API.
+Отдельный красивый UI-клиент для вашего API (`ui_app.py`).
+
+## Что добавлено
+- современный визуальный стиль (градиент, карточки, аккуратные блоки),
+- вкладки: **Поля / OCR текст / Полный JSON**,
+- статус выполнения с понятными сообщениями,
+- сохранение JSON с timestamp в `ui_outputs/` + скачивание файла из интерфейса.
 
 ## Что делает
 - Загружает изображение документа.
-- Отправляет его в `POST /process` вашего backend API.
-- Показывает OCR-боксы поверх изображения.
+- Отправляет его в `POST /process` backend API.
+- Рисует OCR-боксы поверх изображения.
 - Показывает OCR-текст и извлечённые поля.
-- Сохраняет полный JSON в `ui_outputs/result.json`.
 
 ## Запуск
 
-1) Поднимите backend API (как раньше):
+1) Поднимите backend API:
 
 ```bash
 docker compose up --build
 ```
 
-2) В отдельном терминале запустите UI:
+2) В другом терминале запустите UI:
 
 ```bash
 python -m venv .venv
@@ -26,13 +31,12 @@ pip install -r ui_requirements.txt
 python ui_app.py
 ```
 
-3) Откройте в браузере:
+3) Откройте:
 
 ```text
 http://localhost:7860
 ```
 
 ## Настройки
-
 - `OCR_API_URL` — URL backend `/process` (по умолчанию `http://localhost:8000/process`).
-- `UI_OUTPUT_DIR` — куда сохранять JSON UI (по умолчанию `ui_outputs`).
+- `UI_OUTPUT_DIR` — директория для JSON UI (по умолчанию `ui_outputs`).
