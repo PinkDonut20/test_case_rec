@@ -38,14 +38,15 @@ src/
 - **Fallback**: `easyocr` для устойчивости при проблемах загрузки/инференса primary backend.
 
 ### Structured extraction
-- В фокусе API-вариант (`EXTRACTOR_MODE=api` / `hybrid`) — более стабильный quality для JSON extraction.
-- Локальные режимы оставлены как fallback для офлайн/без ключа.
+- По умолчанию используется локальный `hf` режим, который не требует внешних ключей.
+- API-режим оставлен только как опциональный сценарий (если хотите подключить внешний endpoint вручную).
 
 ## Быстрый запуск
 
 ```bash
 cp .env.example .env
 docker compose up --build
+# запускается без LLM ключей
 ```
 
 Проверка:
@@ -63,8 +64,8 @@ curl -X POST "http://localhost:8000/process" -F "file=@/path/to/document.jpg"
 ## Конфигурация
 
 ```env
-# api | hf | hybrid | heuristic
-EXTRACTOR_MODE=hybrid
+# hf | heuristic | hybrid | api
+EXTRACTOR_MODE=hf
 
 # lighton | easyocr
 OCR_BACKEND=lighton
@@ -74,10 +75,8 @@ OCR_MIN_BOX_AREA=60
 LIGHTON_MODEL=lightonai/LightOnOCR-2-1B
 HF_MODEL=Qwen/Qwen2.5-0.5B-Instruct
 
-# для EXTRACTOR_MODE=api или hybrid
-LLM_BASE_URL=
-LLM_API_KEY=
-LLM_MODEL=gpt-4o-mini
+# Никакие LLM_BASE_URL / LLM_API_KEY для обычного запуска не нужны.
+# API режим опционален.
 ```
 
 ## Что улучшать дальше (dewarping)

@@ -24,7 +24,7 @@ def load_settings() -> Settings:
     output_dir.mkdir(parents=True, exist_ok=True)
     return Settings(
         output_dir=output_dir,
-        extractor_mode=os.getenv("EXTRACTOR_MODE", "api").lower(),
+        extractor_mode=os.getenv("EXTRACTOR_MODE", "hf").lower(),
         ocr_backend=os.getenv("OCR_BACKEND", "lighton").lower(),
         use_gpu=os.getenv("USE_GPU", "0") == "1",
         ocr_conf_threshold=float(os.getenv("OCR_CONF_THRESHOLD", "0.20")),
