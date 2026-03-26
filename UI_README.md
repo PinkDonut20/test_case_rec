@@ -40,3 +40,13 @@ http://localhost:7860
 ## Настройки
 - `OCR_API_URL` — URL backend `/process` (по умолчанию `http://localhost:8000/process`).
 - `UI_OUTPUT_DIR` — директория для JSON UI (по умолчанию `ui_outputs`).
+
+
+## Если была ошибка `cannot import name HfFolder`
+Это конфликт версий `gradio` и `huggingface_hub`.
+Сделайте переустановку UI-зависимостей:
+
+```bash
+pip uninstall -y gradio huggingface_hub
+pip install -r ui_requirements.txt
+```
