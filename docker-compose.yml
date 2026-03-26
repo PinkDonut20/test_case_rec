@@ -1,0 +1,17 @@
+services:
+  doc-api:
+    build: .
+    container_name: doc-api
+    ports:
+      - "8000:8000"
+    environment:
+      EXTRACTOR_MODE: ${EXTRACTOR_MODE:-hf}
+      OCR_BACKEND: ${OCR_BACKEND:-lighton}
+      USE_GPU: ${USE_GPU:-0}
+      OCR_CONF_THRESHOLD: ${OCR_CONF_THRESHOLD:-0.20}
+      OCR_MIN_BOX_AREA: ${OCR_MIN_BOX_AREA:-60}
+      LIGHTON_MODEL: ${LIGHTON_MODEL:-lightonai/LightOnOCR-2-1B}
+      HF_MODEL: ${HF_MODEL:-Qwen/Qwen2.5-0.5B-Instruct}
+      OUTPUT_DIR: /app/outputs
+    volumes:
+      - ./outputs:/app/outputs
