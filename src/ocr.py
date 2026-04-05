@@ -45,16 +45,48 @@ class EasyOCRBackend:
         up = cv2.resize(image_bgr, (int(w * 1.5), int(h * 1.5)), interpolation=cv2.INTER_CUBIC)
         return [(image_bgr, 1.0), (gray, 1.0), (clahe, 1.0), (sharp, 1.0), (up, 1.5)]
 
+    @staticmethod
+    def _parse_result_item(item) -> tuple[Any, str, float] | None:
+        """
+        EasyOCR can return different tuple shapes in paragraph mode depending on version.
+        Supported shapes:
+        - (box, text, conf)
+        - (box, text)
+        """
+        if not isinstance(item, (list, tuple)) or len(item) < 2:
+            return None
+
+        box = item[0]
+        text = str(item[1])
+        conf = 1.0
+        if len(item) >= 3:
+            try:
+                conf = float(item[2])
+            except (TypeError, ValueError):
+                conf = 1.0
+
+        return box, text, conf
+
     def run(self, image_bgr) -> list[OCRLine]:
         lines: list[OCRLine] = []
         for variant, scale in self._build_variants(image_bgr):
             result = self.reader.readtext(variant, detail=1, paragraph=True)
-            for box, text, conf in result:
+            for item in result:
+                parsed = self._parse_result_item(item)
+                if parsed is None:
+                    continue
+
+                box, text, conf = parsed
                 text = self._normalize(text)
                 conf = float(conf)
                 if not text or conf < self.settings.ocr_conf_threshold:
                     continue
-                x, y, w, h = self._bbox_from_quad(box)
+
+                try:
+                    x, y, w, h = self._bbox_from_quad(box)
+                except Exception:
+                    continue
+
                 if scale != 1.0:
                     x, y, w, h = int(x / scale), int(y / scale), int(w / scale), int(h / scale)
                 if w * h < self.settings.ocr_min_box_area:
@@ -126,7 +158,7 @@ class OCRService:
         return self._fallback
 
     def run(self, image_bgr) -> tuple[list[dict[str, Any]], str | None]:
-        err = None
+        err: str | None = None
         try:
             lines = [x.as_dict() for x in self._get_primary().run(image_bgr)]
             if lines:
@@ -134,5 +166,13 @@ class OCRService:
         except Exception as e:
             err = f"primary_ocr_error: {e}"
 
-        fallback = [x.as_dict() for x in self._get_fallback().run(image_bgr)]
-        return fallback, err
+        try:
+            fallback = [x.as_dict() for x in self._get_fallback().run(image_bgr)]
+            return fallback, err
+        except Exception as e:
+            if err:
+                err = f"{err}; fallback_ocr_error: {e}"
+            else:
+                err = f"fallback_ocr_error: {e}"
+            # do not crash API; return empty OCR with error string
+            return [], err
