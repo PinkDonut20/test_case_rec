@@ -1,18 +1,18 @@
-# UI приложение (Linux/macOS) — Doc OCR Studio
+# UI приложение (Linux/macOS) — Desktop (Tkinter)
 
-Отдельный красивый UI-клиент для вашего API (`ui_app.py`).
+Полностью переписанный UI без Gradio, чтобы запускался стабильно в обычном Python-окружении.
 
-## Что добавлено
-- современный визуальный стиль (градиент, карточки, аккуратные блоки),
-- вкладки: **Поля / OCR текст / Полный JSON**,
-- статус выполнения с понятными сообщениями,
-- сохранение JSON с timestamp в `ui_outputs/` + скачивание файла из интерфейса.
+## Почему теперь точно проще
+- `tkinter` встроен в Python (обычно уже есть в macOS/Linux установке),
+- нет конфликтов `gradio` / `huggingface_hub`,
+- минимум зависимостей: только `requests` и `Pillow`.
 
-## Что делает
-- Загружает изображение документа.
-- Отправляет его в `POST /process` backend API.
-- Рисует OCR-боксы поверх изображения.
-- Показывает OCR-текст и извлечённые поля.
+## Что умеет UI
+- Загрузить изображение документа.
+- Отправить в API (`POST /process`).
+- Показать OCR-боксы на изображении.
+- Показать `fields`, OCR-текст и полный JSON (вкладки).
+- Автосохранение JSON в `ui_outputs/` + ручное `Сохранить JSON`.
 
 ## Запуск
 
@@ -22,7 +22,7 @@
 docker compose up --build
 ```
 
-2) В другом терминале запустите UI:
+2) В другом терминале запустите desktop UI:
 
 ```bash
 python -m venv .venv
@@ -31,22 +31,13 @@ pip install -r ui_requirements.txt
 python ui_app.py
 ```
 
-3) Откройте:
-
-```text
-http://localhost:7860
-```
-
 ## Настройки
 - `OCR_API_URL` — URL backend `/process` (по умолчанию `http://localhost:8000/process`).
 - `UI_OUTPUT_DIR` — директория для JSON UI (по умолчанию `ui_outputs`).
 
-
-## Если была ошибка `cannot import name HfFolder`
-Это конфликт версий `gradio` и `huggingface_hub`.
-Сделайте переустановку UI-зависимостей:
+## Если `tkinter` не найден
+На некоторых Linux-сборках может не быть пакета tk:
 
 ```bash
-pip uninstall -y gradio huggingface_hub
-pip install -r ui_requirements.txt
+sudo apt-get update && sudo apt-get install -y python3-tk
 ```
